@@ -59,10 +59,6 @@ OcShowMenuByOcEnter (
     return Status;
   }
 
-  //
-  // Extension for OpenCore builtin renderer to mark that we control text output here.
-  //
-  gST->ConOut->TestString (gST->ConOut, OC_CONSOLE_MARK_CONTROLLED);
   mPreviousMode = OcConsoleControlSetMode (EfiConsoleControlScreenGraphics);
 
   return EFI_SUCCESS;
@@ -75,10 +71,6 @@ OcShowMenuByOcLeave (
   )
 {
   GuiLibDestruct ();
-  //
-  // Extension for OpenCore builtin renderer to mark that we no longer control text output here.
-  //
-  gST->ConOut->TestString (gST->ConOut, OC_CONSOLE_MARK_UNCONTROLLED);
   OcConsoleControlSetMode (mPreviousMode);
 }
 
@@ -110,8 +102,18 @@ OcShowMenuByOc (
 
   *ChosenBootEntry = NULL;
   OcSetInitialCursorOffset ();
-  mGuiContext.BootEntry            = NULL;
-  mGuiContext.ReadyToBoot          = FALSE;
+  mGuiContext.BootEntry   = NULL;
+  mGuiContext.ReadyToBoot = FALSE;
+
+  //
+  // When enabled, re-run intro animation on each entry into menu, to avoid
+  // stuck animation which happens otherwise, if a menu item which returns to
+  // the menu is selected before the animation ends.
+  // Do not play intro animation for visually impaired users.
+  //
+  mGuiContext.UseMenuEaseIn = !BootContext->PickerContext->PickerAudioAssist
+                              && ((BootContext->PickerContext->PickerAttributes & OC_ATTR_REDUCE_MOTION) == 0);
+
   mGuiContext.HideAuxiliary        = BootContext->PickerContext->HideAuxiliary;
   mGuiContext.Refresh              = FALSE;
   mGuiContext.PickerContext        = BootContext->PickerContext;
@@ -123,12 +125,6 @@ OcShowMenuByOc (
   }
 
   mDrawContext.TimeOutSeconds = BootContext->PickerContext->TimeoutSeconds;
-  //
-  // Do not play intro animation for blind.
-  //
-  if (BootContext->PickerContext->PickerAudioAssist) {
-    mGuiContext.DoneIntroAnimation = TRUE;
-  }
 
   Status = BootPickerViewInitialize (
              &mDrawContext,
@@ -256,12 +252,8 @@ OcShowPasswordByOc (
 
   mDrawContext.TimeOutSeconds = 0;
 
-  //
-  // Do not play intro animation for blind.
-  //
-  if (Context->PickerAudioAssist) {
-    mGuiContext.DoneIntroAnimation = TRUE;
-  }
+  mGuiContext.UsePasswordEaseIn = !Context->PickerAudioAssist
+                                  && ((Context->PickerAttributes & OC_ATTR_REDUCE_MOTION) == 0);
 
   Status = PasswordViewInitialize (
              &mDrawContext,

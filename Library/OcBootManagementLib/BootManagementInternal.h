@@ -133,8 +133,9 @@ InternalCheckScanPolicy (
 
 EFI_DEVICE_PATH_PROTOCOL *
 InternalLoadDmg (
-  IN OUT INTERNAL_DMG_LOAD_CONTEXT  *Context,
-  IN     OC_DMG_LOADING_SUPPORT     DmgLoading
+  IN OUT INTERNAL_DMG_LOAD_CONTEXT            *Context,
+  IN     OC_DMG_LOADING_SUPPORT               DmgLoading,
+  IN     OC_APPLE_DISK_IMAGE_PRELOAD_CONTEXT  *DmgPreloadContext
   );
 
 VOID
@@ -152,8 +153,7 @@ InternalGetAppleDiskLabel (
 CHAR8 *
 InternalGetContentFlavour (
   IN  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *FileSystem,
-  IN  CONST CHAR16                     *BootDirectoryName,
-  IN  CONST CHAR16                     *FlavourFilename
+  IN  CONST CHAR16                     *BootDirectoryName
   );
 
 EFI_STATUS
@@ -178,7 +178,8 @@ InternalLoadBootEntry (
   IN  OC_BOOT_ENTRY              *BootEntry,
   IN  EFI_HANDLE                 ParentHandle,
   OUT EFI_HANDLE                 *EntryHandle,
-  OUT INTERNAL_DMG_LOAD_CONTEXT  *DmgLoadContext
+  OUT INTERNAL_DMG_LOAD_CONTEXT  *DmgLoadContext,
+  OUT VOID                       **CustomFreeContext
   );
 
 UINT16 *

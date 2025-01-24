@@ -47,6 +47,7 @@
   ImageLoader.c
   PolicyManagement.c
   OcBootManagementLib.c
+  OcResetSystem.c
 
 [Packages]
   OpenCorePkg/OpenCorePkg.dec
@@ -88,11 +89,13 @@
 [LibraryClasses]
   BaseLib
   BaseMemoryLib
+  BaseOverflowLib
   DebugLib
   DevicePathLib
   MemoryAllocationLib
   PrintLib
   UefiBootServicesTableLib
+  UefiImageOnlyNonFvLib
   OcApfsLib
   OcAppleBootPolicyLib
   OcAppleChunklistLib
@@ -106,10 +109,9 @@
   OcDevicePathLib
   OcFileLib
   OcFlexArrayLib
-  OcGuardLib
   OcMachoLib
   OcMiscLib
-  OcPeCoffLib
+  OcPeCoffExtLib
   OcRtcLib
   OcTypingLib
   OcVariableLib

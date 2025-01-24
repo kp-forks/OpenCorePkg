@@ -100,6 +100,7 @@ UserReadFile (
 
   if (fread (Buffer, (size_t)FileSize, 1, FilePtr) != 1) {
     fclose (FilePtr);
+    free (Buffer);
     return NULL;
   }
 
@@ -130,6 +131,7 @@ UserWriteFile (
   }
 
   if (fwrite (Data, Size, 1, FilePtr) != 1) {
+    fclose (FilePtr);
     abort ();
   }
 

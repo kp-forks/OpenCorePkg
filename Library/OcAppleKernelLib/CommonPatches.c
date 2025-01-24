@@ -62,17 +62,13 @@ PatchAppleCpuPmCfgLock (
 
   //
   // NOTE: As of macOS 13.0 AICPUPM kext is removed.
-  // However, we may remove this check later, if an older version can be injected correctly
-  // such that it will patched.
+  // However, legacy version of this kext may be injected and patched,
+  // thus no need to perform system version check here.
   //
-  if (OcMatchDarwinVersion (KernelVersion, KERNEL_VERSION_VENTURA_MIN, 0)) {
-    DEBUG ((DEBUG_INFO, "OCAK: [OK] Skipping AppleCpuPmCfgLock patch on kernel version %u\n", KernelVersion));
-    return EFI_SUCCESS;
-  }
 
   if (Patcher == NULL) {
     DEBUG ((DEBUG_INFO, "OCAK: [OK] Skipping %a on NULL Patcher on kernel version %u\n", __func__, KernelVersion));
-    return EFI_NOT_FOUND;
+    return OcMatchDarwinVersion (KernelVersion, KERNEL_VERSION_VENTURA_MIN, 0) ? EFI_SUCCESS : EFI_NOT_FOUND;
   }
 
   Count     = 0;
@@ -339,6 +335,61 @@ PATCHER_GENERIC_PATCH
 
 STATIC
 CONST UINT8
+  mMiscPwrMgmtRelFind15[] = {
+  0xB9, 0xAA, 0x01, 0x00, 0x00, ///< mov ecx, 0x1AA
+  0x0F, 0x32,                   ///< rdmsr
+  0x89, 0xD2,                   ///< mov edx, edx
+  0x83, 0x00, 0x00,             ///< and/or, whatever
+  0x0F, 0x30                    ///< wrmsr
+};
+
+STATIC
+CONST UINT8
+  mMiscPwrMgmtRelMask15[] = {
+  0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+  0xFF, 0xFF,
+  0xFF, 0xFF,
+  0xFF, 0x00, 0x00,
+  0xFF, 0xFF
+};
+
+STATIC
+CONST UINT8
+  mMiscPwrMgmtRelReplace15[] = {
+  0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00,
+  0x00, 0x00,
+  0x00, 0x00, 0x00,
+  0x90, 0x90                     ///< nop
+};
+
+STATIC
+CONST UINT8
+  mMiscPwrMgmtRelReplaceMask15[] = {
+  0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00,
+  0x00, 0x00,
+  0x00, 0x00, 0x00,
+  0xFF, 0xFF
+};
+
+STATIC
+PATCHER_GENERIC_PATCH
+  mMiscPwrMgmtRel15Patch = {
+  .Comment     = DEBUG_POINTER ("MiscPwrMgmtRel Sequoia"),
+  .Base        = NULL,
+  .Find        = mMiscPwrMgmtRelFind15,
+  .Mask        = mMiscPwrMgmtRelMask15,
+  .Replace     = mMiscPwrMgmtRelReplace15,
+  .ReplaceMask = mMiscPwrMgmtRelReplaceMask15,
+  .Size        = sizeof (mMiscPwrMgmtRelFind15),
+  .Count       = 0,
+  .Skip        = 0,
+  .Limit       = 0
+};
+
+STATIC
+CONST UINT8
   mMiscPwrMgmtDbgFind[] = {
   0xBF, 0xAA, 0x01, 0x00, 0x00,  ///< mov edi, 0x1AA
   0xE8                           ///< call (wrmsr64)
@@ -451,12 +502,22 @@ PatchAppleXcpmExtraMsrs (
   //
   // Now patch writes to MSR_MISC_PWR_MGMT.
   //
-  Status = PatcherApplyGenericPatch (Patcher, &mMiscPwrMgmtRelPatch);
-  if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_INFO, "OCAK: Failed to patch writes to MSR_MISC_PWR_MGMT - %r, trying dbg\n", Status));
-    Status = PatcherApplyGenericPatch (Patcher, &mMiscPwrMgmtDbgPatch);
+  if (OcMatchDarwinVersion (KernelVersion, KERNEL_VERSION_SEQUOIA_MIN, 0)) {
+    //
+    // TODO: Find dbg patch on macOS 15+.
+    //
+    Status = PatcherApplyGenericPatch (Patcher, &mMiscPwrMgmtRel15Patch);
     if (EFI_ERROR (Status)) {
-      DEBUG ((DEBUG_WARN, "OCAK: Failed to patch writes to MSR_MISC_PWR_MGMT - %r\n", Status));
+      DEBUG ((DEBUG_WARN, "OCAK: Failed to patch writes to XcpmExtraMsrs MSR_MISC_PWR_MGMT macOS 15+ - %r\n", Status));
+    }
+  } else {
+    Status = PatcherApplyGenericPatch (Patcher, &mMiscPwrMgmtRelPatch);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_INFO, "OCAK: Failed to patch writes to XcpmExtraMsrs MSR_MISC_PWR_MGMT old - %r, trying dbg\n", Status));
+      Status = PatcherApplyGenericPatch (Patcher, &mMiscPwrMgmtDbgPatch);
+      if (EFI_ERROR (Status)) {
+        DEBUG ((DEBUG_WARN, "OCAK: Failed to patch writes to XcpmExtraMsrs MSR_MISC_PWR_MGMT old - %r\n", Status));
+      }
     }
   }
 
@@ -489,6 +550,14 @@ CONST UINT8
   mPerfCtrlFind3[] = {
   0xB9, 0x99, 0x01, 0x00, 0x00, ///< mov ecx, 0x199
   0x4C, 0x89, 0xF0,             ///< mov rax, r14
+  0x0F, 0x30                    ///< wrmsr
+};
+
+STATIC
+CONST UINT8
+  mPerfCtrlFind4[] = {
+  0xB9, 0x99, 0x01, 0x00, 0x00, ///< mov ecx, 0x199
+  0x48, 0x89, 0xD8,             ///< mov rax, rbx
   0x0F, 0x30                    ///< wrmsr
 };
 
@@ -542,7 +611,8 @@ PatchAppleXcpmForceBoost (
     {
       if (  (CompareMem (&Current[4], &mPerfCtrlFind1[4], sizeof (mPerfCtrlFind1) - 4) == 0)
          || (CompareMem (&Current[4], &mPerfCtrlFind2[4], sizeof (mPerfCtrlFind2) - 4) == 0)
-         || (CompareMem (&Current[4], &mPerfCtrlFind3[4], sizeof (mPerfCtrlFind3) - 4) == 0))
+         || (CompareMem (&Current[4], &mPerfCtrlFind3[4], sizeof (mPerfCtrlFind3) - 4) == 0)
+         || (CompareMem (&Current[4], &mPerfCtrlFind4[4], sizeof (mPerfCtrlFind4) - 4) == 0))
       {
         break;
       }
@@ -640,26 +710,73 @@ PATCHER_GENERIC_PATCH
 
 STATIC
 CONST UINT8
-  mRemoveUsbLimitIoP1Find[] = {
+  mRemoveUsbLimitIoP1Find1[] = {
   0x0F, 0x0F, 0x87
 };
 
 STATIC
 CONST UINT8
-  mRemoveUsbLimitIoP1Replace[] = {
+  mRemoveUsbLimitIoP1Replace1[] = {
   0x40, 0x0F, 0x87
 };
 
 STATIC
 PATCHER_GENERIC_PATCH
-  mRemoveUsbLimitIoP1Patch = {
-  .Comment     = DEBUG_POINTER ("RemoveUsbLimitIoP1"),
+  mRemoveUsbLimitIoP1Patch1 = {
+  .Comment     = DEBUG_POINTER ("RemoveUsbLimitIoP1 part 1"),
   .Base        = "__ZN16AppleUSBHostPort15setPortLocationEj",
-  .Find        = mRemoveUsbLimitIoP1Find,
+  .Find        = mRemoveUsbLimitIoP1Find1,
   .Mask        = NULL,
-  .Replace     = mRemoveUsbLimitIoP1Replace,
+  .Replace     = mRemoveUsbLimitIoP1Replace1,
   .ReplaceMask = NULL,
-  .Size        = sizeof (mRemoveUsbLimitIoP1Replace),
+  .Size        = sizeof (mRemoveUsbLimitIoP1Replace1),
+  .Count       = 1,
+  .Skip        = 0,
+  .Limit       = 4096
+};
+
+STATIC
+CONST UINT8
+  mRemoveUsbLimitIoP1Find2[] = {
+  0x41, 0x83, 0x00, 0x0F,  ///< and whatever, 0x0Fh
+  0x41, 0xD3, 0x00,        ///< shl whatever, cl
+  0x00, 0x09, 0x00         ///< or ebx, whatever
+};
+
+STATIC
+CONST UINT8
+  mRemoveUsbLimitIoP1Mask2[] = {
+  0xFF, 0xFF, 0x00, 0xFF,
+  0xFF, 0xFF, 0x00,
+  0x00, 0xFF, 0x00
+};
+
+STATIC
+CONST UINT8
+  mRemoveUsbLimitIoP1Replace2[] = {
+  0x00, 0x00, 0x00, 0x3F,
+  0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00
+};
+
+STATIC
+CONST UINT8
+  mRemoveUsbLimitIoP1ReplaceMask2[] = {
+  0x00, 0x00, 0x00, 0xFF,
+  0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00
+};
+
+STATIC
+PATCHER_GENERIC_PATCH
+  mRemoveUsbLimitIoP1Patch2 = {
+  .Comment     = DEBUG_POINTER ("RemoveUsbLimitIoP1 part 2"),
+  .Base        = "__ZN16AppleUSBHostPort15setPortLocationEj",
+  .Find        = mRemoveUsbLimitIoP1Find2,
+  .Mask        = mRemoveUsbLimitIoP1Mask2,
+  .Replace     = mRemoveUsbLimitIoP1Replace2,
+  .ReplaceMask = mRemoveUsbLimitIoP1ReplaceMask2,
+  .Size        = sizeof (mRemoveUsbLimitIoP1Replace2),
   .Count       = 1,
   .Skip        = 0,
   .Limit       = 4096
@@ -688,11 +805,26 @@ PatchUsbXhciPortLimit1 (
     return EFI_NOT_FOUND;
   }
 
-  Status = PatcherApplyGenericPatch (Patcher, &mRemoveUsbLimitIoP1Patch);
+  Status = PatcherApplyGenericPatch (Patcher, &mRemoveUsbLimitIoP1Patch1);
   if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_INFO, "OCAK: [FAIL] Failed to apply port patch com.apple.iokit.IOUSBHostFamily - %r\n", Status));
+    DEBUG ((DEBUG_INFO, "OCAK: [FAIL] Failed to apply port patch com.apple.iokit.IOUSBHostFamily part 1 - %r\n", Status));
   } else {
-    DEBUG ((DEBUG_INFO, "OCAK: [OK] Patch success port com.apple.iokit.IOUSBHostFamily\n"));
+    DEBUG ((DEBUG_INFO, "OCAK: [OK] Patch success port com.apple.iokit.IOUSBHostFamily part 1\n"));
+  }
+
+  //
+  // The following patch is only needed on macOS 11.1 (Darwin 20.2.0) and above; skip it otherwise.
+  //
+  if (!OcMatchDarwinVersion (KernelVersion, KERNEL_VERSION (KERNEL_VERSION_BIG_SUR, 2, 0), 0)) {
+    DEBUG ((DEBUG_INFO, "OCAK: [OK] Skipping port patch com.apple.iokit.IOUSBHostFamily part 2 on %u\n", KernelVersion));
+    return Status;
+  }
+
+  Status = PatcherApplyGenericPatch (Patcher, &mRemoveUsbLimitIoP1Patch2);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_INFO, "OCAK: [FAIL] Failed to apply port patch com.apple.iokit.IOUSBHostFamily part 2 - %r\n", Status));
+  } else {
+    DEBUG ((DEBUG_INFO, "OCAK: [OK] Patch success port com.apple.iokit.IOUSBHostFamily part 2\n"));
   }
 
   return Status;
@@ -857,6 +989,122 @@ PATCHER_GENERIC_PATCH
 };
 
 STATIC
+CONST UINT8
+  mIOAHCIBlockStoragePatch133Find1[] = {
+  0x48, 0x8D, 0x3D, 0x00, 0x00, 0x00, 0x00,
+  0xBA, 0x09, 0x00, 0x00, 0x00
+};
+
+STATIC
+CONST UINT8
+  mIOAHCIBlockStoragePatch133Find2[] = {
+  0x48, 0x8D, 0x3D, 0x00, 0x00, 0x00, 0x00,
+  0xBA, 0x05, 0x00, 0x00, 0x00
+};
+
+STATIC
+CONST UINT8
+  mIOAHCIBlockStoragePatch133FindMask[] = {
+  0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00,
+  0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+};
+
+STATIC
+CONST UINT8
+  mIOAHCIBlockStoragePatch133Replace[] = {
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0xBA, 0x00, 0x00, 0x00, 0x00
+};
+
+STATIC
+CONST UINT8
+  mIOAHCIBlockStoragePatch133ReplaceMask[] = {
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+};
+
+STATIC
+PATCHER_GENERIC_PATCH
+  mIOAHCIBlockStoragePatch133Part1 = {
+  .Comment     = DEBUG_POINTER ("IOAHCIBlockStorage trim 13.3+ part 1"),
+  .Base        = "__ZN24IOAHCIBlockStorageDriver23DetermineDeviceFeaturesEPt",
+  .Find        = mIOAHCIBlockStoragePatch133Find1,
+  .Mask        = mIOAHCIBlockStoragePatch133FindMask,
+  .Replace     = mIOAHCIBlockStoragePatch133Replace,
+  .ReplaceMask = mIOAHCIBlockStoragePatch133ReplaceMask,
+  .Size        = sizeof (mIOAHCIBlockStoragePatch133Find1),
+  .Count       = 1,
+  .Skip        = 0,
+  .Limit       = 4096
+};
+
+STATIC
+PATCHER_GENERIC_PATCH
+  mIOAHCIBlockStoragePatch133Part2 = {
+  .Comment     = DEBUG_POINTER ("IOAHCIBlockStorage trim 13.3+ part 2"),
+  .Base        = "__ZN24IOAHCIBlockStorageDriver23DetermineDeviceFeaturesEPt",
+  .Find        = mIOAHCIBlockStoragePatch133Find2,
+  .Mask        = mIOAHCIBlockStoragePatch133FindMask,
+  .Replace     = mIOAHCIBlockStoragePatch133Replace,
+  .ReplaceMask = mIOAHCIBlockStoragePatch133ReplaceMask,
+  .Size        = sizeof (mIOAHCIBlockStoragePatch133Find2),
+  .Count       = 1,
+  .Skip        = 0,
+  .Limit       = 4096
+};
+
+STATIC
+CONST UINT8
+  mIOAHCIBlockStoragePatch144Find[] = {
+  0x4C, 0x8D, 0x2D, 0x00, 0x00, 0x00, 0x00, ///< lea r13, qword ("APPLE" and "APPLE SSD")
+  0x4C, 0x89, 0xEF,                         ///< mov rdi, r13
+  0xE8, 0x00, 0x00, 0x00, 0x00,             ///< call strlen
+  0x4C, 0x89, 0xEF                          ///< mov rdi, r13
+};
+
+STATIC
+CONST UINT8
+  mIOAHCIBlockStoragePatch144FindMask[] = {
+  0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00,
+  0xFF, 0xFF, 0xFF,
+  0xFF, 0x00, 0x00, 0x00, 0x00,
+  0xFF, 0xFF, 0xFF
+};
+
+STATIC
+CONST UINT8
+  mIOAHCIBlockStoragePatch144Replace[] = {
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00,
+  0x31, 0xC0, 0x90, 0x90, 0x90, ///< xor eax, eax ; nop
+  0x00, 0x00, 0x00
+};
+
+STATIC
+CONST UINT8
+  mIOAHCIBlockStoragePatch144ReplaceMask[] = {
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00,
+  0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+  0x00, 0x00, 0x00
+};
+
+STATIC
+PATCHER_GENERIC_PATCH
+  mIOAHCIBlockStoragePatch144 = {
+  .Comment     = DEBUG_POINTER ("IOAHCIBlockStorage trim 14.4+"),
+  .Base        = "__ZN24IOAHCIBlockStorageDriver23DetermineDeviceFeaturesEPt",
+  .Find        = mIOAHCIBlockStoragePatch144Find,
+  .Mask        = mIOAHCIBlockStoragePatch144FindMask,
+  .Replace     = mIOAHCIBlockStoragePatch144Replace,
+  .ReplaceMask = mIOAHCIBlockStoragePatch144ReplaceMask,
+  .Size        = sizeof (mIOAHCIBlockStoragePatch144Find),
+  .Count       = 2,
+  .Skip        = 0,
+  .Limit       = 4096
+};
+
+STATIC
 EFI_STATUS
 PatchThirdPartyDriveSupport (
   IN OUT PATCHER_CONTEXT  *Patcher OPTIONAL,
@@ -870,22 +1118,58 @@ PatchThirdPartyDriveSupport (
     return EFI_NOT_FOUND;
   }
 
+  //
+  // macOS 14.4+ (Darwin 23.4.0) adopted different patch patterns similar to 13.3+, as below.
+  //
+  if (OcMatchDarwinVersion (KernelVersion, KERNEL_VERSION (KERNEL_VERSION_SONOMA, 4, 0), 0)) {
+    Status = PatcherApplyGenericPatch (Patcher, &mIOAHCIBlockStoragePatch144);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_INFO, "OCAK: [FAIL] Failed to apply patch 14.4+ com.apple.iokit.IOAHCIBlockStorage - %r\n", Status));
+    } else {
+      DEBUG ((DEBUG_INFO, "OCAK: [OK] Patch success 14.4+ com.apple.iokit.IOAHCIBlockStorage\n"));
+    }
+
+    return Status;
+  }
+
+  //
+  // Starting with macOS 13.3 (Darwin 22.4.0), a new set of patches are required, discovered by @vit9696.
+  //
+  if (OcMatchDarwinVersion (KernelVersion, KERNEL_VERSION (KERNEL_VERSION_VENTURA, 4, 0), 0)) {
+    Status = PatcherApplyGenericPatch (Patcher, &mIOAHCIBlockStoragePatch133Part1);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_INFO, "OCAK: [FAIL] Failed to apply patch 13.3+ com.apple.iokit.IOAHCIBlockStorage part 1 - %r\n", Status));
+      return Status;
+    } else {
+      DEBUG ((DEBUG_INFO, "OCAK: [OK] Patch success 13.3+ com.apple.iokit.IOAHCIBlockStorage part 1\n"));
+    }
+
+    Status = PatcherApplyGenericPatch (Patcher, &mIOAHCIBlockStoragePatch133Part2);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_INFO, "OCAK: [FAIL] Failed to apply patch 13.3+ com.apple.iokit.IOAHCIBlockStorage part 2 - %r\n", Status));
+    } else {
+      DEBUG ((DEBUG_INFO, "OCAK: [OK] Patch success 13.3+ com.apple.iokit.IOAHCIBlockStorage part 2\n"));
+    }
+
+    return Status;
+  }
+
   Status = PatcherApplyGenericPatch (Patcher, &mIOAHCIBlockStoragePatchV1);
   if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_INFO, "OCAK: [FAIL] Failed to apply patch com.apple.iokit.IOAHCIBlockStorage V1 - %r\n", Status));
+    DEBUG ((DEBUG_INFO, "OCAK: [FAIL] Failed to apply patch legacy com.apple.iokit.IOAHCIBlockStorage V1 - %r\n", Status));
   } else {
-    DEBUG ((DEBUG_INFO, "OCAK: [OK] Patch success com.apple.iokit.IOAHCIBlockStorage V1\n"));
+    DEBUG ((DEBUG_INFO, "OCAK: [OK] Patch success legacy com.apple.iokit.IOAHCIBlockStorage V1\n"));
   }
 
   if (OcMatchDarwinVersion (KernelVersion, KERNEL_VERSION_CATALINA_MIN, 0)) {
     Status = PatcherApplyGenericPatch (Patcher, &mIOAHCIBlockStoragePatchV2);
     if (EFI_ERROR (Status)) {
-      DEBUG ((DEBUG_INFO, "OCAK: [FAIL] Failed to apply patch com.apple.iokit.IOAHCIBlockStorage V2 - %r\n", Status));
+      DEBUG ((DEBUG_INFO, "OCAK: [FAIL] Failed to apply patch legacy com.apple.iokit.IOAHCIBlockStorage V2 - %r\n", Status));
     } else {
-      DEBUG ((DEBUG_INFO, "OCAK: [OK] Patch success com.apple.iokit.IOAHCIBlockStorage V2\n"));
+      DEBUG ((DEBUG_INFO, "OCAK: [OK] Patch success legacy com.apple.iokit.IOAHCIBlockStorage V2\n"));
     }
   } else {
-    DEBUG ((DEBUG_INFO, "OCAK: [OK] Skipping IOAHCIBlockStorage V2 on %u\n", KernelVersion));
+    DEBUG ((DEBUG_INFO, "OCAK: [OK] Skipping IOAHCIBlockStorage legacy V2 on %u\n", KernelVersion));
   }
 
   //
@@ -895,7 +1179,7 @@ PatchThirdPartyDriveSupport (
   if (  EFI_ERROR (Status)
      && OcMatchDarwinVersion (KernelVersion, KERNEL_VERSION_SNOW_LEOPARD_MIN, KERNEL_VERSION_SNOW_LEOPARD_MAX))
   {
-    DEBUG ((DEBUG_INFO, "OCAK: [OK] Assuming success for IOAHCIBlockStorage on %u\n", KernelVersion));
+    DEBUG ((DEBUG_INFO, "OCAK: [OK] Assuming success for legacy IOAHCIBlockStorage on %u\n", KernelVersion));
     return EFI_SUCCESS;
   }
 
@@ -924,7 +1208,7 @@ PATCHER_GENERIC_PATCH
   .Replace     = mIOAHCIPortPatchReplace,
   .ReplaceMask = NULL,
   .Size        = sizeof (mIOAHCIPortPatchFind),
-  .Count       = 1,
+  .Count       = 1,  ///< 2 for macOS 13.3+
   .Skip        = 0
 };
 
@@ -940,6 +1224,15 @@ PatchForceInternalDiskIcons (
   if (Patcher == NULL) {
     DEBUG ((DEBUG_INFO, "OCAK: [OK] Skipping %a on NULL Patcher on %u\n", __func__, KernelVersion));
     return EFI_NOT_FOUND;
+  }
+
+  //
+  // Override patch count to 2 on macOS 13.3+ (Darwin 22.4.0).
+  //
+  if (OcMatchDarwinVersion (KernelVersion, KERNEL_VERSION (KERNEL_VERSION_VENTURA, 4, 0), 0)) {
+    mIOAHCIPortPatch.Count = 2;
+  } else {
+    mIOAHCIPortPatch.Count = 1;
   }
 
   Status = PatcherApplyGenericPatch (Patcher, &mIOAHCIPortPatch);
@@ -1002,6 +1295,58 @@ PatchAppleIoMapperSupport (
     DEBUG ((DEBUG_INFO, "OCAK: [FAIL] Failed to apply patch com.apple.iokit.IOPCIFamily AppleIoMapper - %r\n", Status));
   } else {
     DEBUG ((DEBUG_INFO, "OCAK: [OK] Patch success com.apple.iokit.IOPCIFamily AppleIoMapper\n"));
+  }
+
+  return Status;
+}
+
+STATIC
+CONST UINT8
+  mAppleIoMapperMappingPatchReplace[] = {
+  0xC3  ///< ret
+};
+
+STATIC
+PATCHER_GENERIC_PATCH
+  mAppleIoMapperMappingPatch = {
+  .Comment     = DEBUG_POINTER ("AppleIoMapperMapping"),
+  .Base        = "__ZN8AppleVTD14addMemoryRangeEyy",
+  .Find        = NULL,
+  .Mask        = NULL,
+  .Replace     = mAppleIoMapperMappingPatchReplace,
+  .ReplaceMask = NULL,
+  .Size        = sizeof (mAppleIoMapperMappingPatchReplace),
+  .Count       = 1,
+  .Skip        = 0
+};
+
+STATIC
+EFI_STATUS
+PatchAppleIoMapperMapping (
+  IN OUT PATCHER_CONTEXT  *Patcher OPTIONAL,
+  IN     UINT32           KernelVersion
+  )
+{
+  EFI_STATUS  Status;
+
+  //
+  // This patch is not required before macOS 13.3 (kernel 22.4.0)
+  //
+  if (!OcMatchDarwinVersion (KernelVersion, KERNEL_VERSION (KERNEL_VERSION_VENTURA, 4, 0), 0)) {
+    DEBUG ((DEBUG_INFO, "OCAK: [OK] Skipping AppleIoMapperMapping patch on %u\n", KernelVersion));
+    return EFI_SUCCESS;
+  }
+
+  if (Patcher == NULL) {
+    DEBUG ((DEBUG_INFO, "OCAK: [OK] Skipping %a on NULL Patcher on %u\n", __func__, KernelVersion));
+    return EFI_NOT_FOUND;
+  }
+
+  Status = PatcherApplyGenericPatch (Patcher, &mAppleIoMapperMappingPatch);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_INFO, "OCAK: [FAIL] Failed to apply patch com.apple.iokit.IOPCIFamily AppleIoMapperMapping - %r\n", Status));
+  } else {
+    DEBUG ((DEBUG_INFO, "OCAK: [OK] Patch success com.apple.iokit.IOPCIFamily AppleIoMapperMapping\n"));
   }
 
   return Status;
@@ -1438,14 +1783,14 @@ STATIC
 CONST UINT8
   mLapicKernelPanicPatchFind[] = {
   0x65, 0x8B, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00,  ///< mov eax, gs:1Ch or gs:18h on 10.15.4+ or gs:20h on 11.0.
-  0x3B, 0x00, 0x00, 0x00, 0x00, 0x00               ///< cmp eax, cs:_master_cpu <- address masked out
+  0x3B, 0x05, 0x00, 0x00, 0x00, 0x00               ///< cmp eax, cs:_master_cpu <- address masked out
 };
 
 STATIC
 CONST UINT8
   mLapicKernelPanicPatchMask[] = {
   0xFF, 0xFF, 0xFF, 0xFF, 0xC3, 0xFF, 0xFF, 0xFF,
-  0xFF, 0x00, 0x00, 0x00, 0x00, 0x00
+  0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00
 };
 
 STATIC
@@ -1465,44 +1810,6 @@ PATCHER_GENERIC_PATCH
   .Replace     = mLapicKernelPanicPatchReplace,
   .ReplaceMask = NULL,
   .Size        = sizeof (mLapicKernelPanicPatchReplace),
-  .Count       = 1,
-  .Skip        = 0,
-  .Limit       = 1024
-};
-
-STATIC
-CONST UINT8
-  mLapicKernelPanicPatchLegacyFind[] = {
-  0x65, 0x8B, 0x04, 0x25, 0x10, 0x00, 0x00, 0x00,  ///< mov eax, gs:1Ch on 10.9.5 and 14h on 10.8.5.
-  0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,        ///< lea rcx, _master_cpu
-  0x00, 0x00                                       ///< cmp eax, [rcx]
-};
-
-STATIC
-CONST UINT8
-  mLapicKernelPanicPatchLegacyMask[] = {
-  0xFF, 0xFF, 0xFF, 0xFF, 0xF3, 0xFF, 0xFF, 0xFF,
-  0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00
-};
-
-STATIC
-CONST UINT8
-  mLapicKernelPanicPatchLegacyReplace[] = {
-  0x31, 0xC0,                                                                              ///< xor eax, eax
-  0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 ///< nop
-};
-
-STATIC
-PATCHER_GENERIC_PATCH
-  mLapicKernelPanicLegacyPatch = {
-  .Comment     = DEBUG_POINTER ("LapicKernelPanicLegacy"),
-  .Base        = "_lapic_interrupt",
-  .Find        = mLapicKernelPanicPatchLegacyFind,
-  .Mask        = mLapicKernelPanicPatchLegacyMask,
-  .Replace     = mLapicKernelPanicPatchLegacyReplace,
-  .ReplaceMask = NULL,
-  .Size        = sizeof (mLapicKernelPanicPatchLegacyReplace),
   .Count       = 1,
   .Skip        = 0,
   .Limit       = 1024
@@ -1544,6 +1851,207 @@ PATCHER_GENERIC_PATCH
 
 STATIC
 EFI_STATUS
+PatchLapicKernel (
+  IN OUT PATCHER_CONTEXT  *Patcher,
+  IN     UINT32           KernelVersion
+  )
+{
+  EFI_STATUS  Status;
+
+  Status = PatcherApplyGenericPatch (Patcher, &mLapicKernelPanicPatch);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_INFO, "OCAK: [FAIL] Failed to apply modern lapic patch - %r, trying legacy\n", Status));
+    return Status;
+  }
+
+  DEBUG ((DEBUG_INFO, "OCAK: [OK] Patch success lapic\n"));
+
+  //
+  // Patch away the master core check to never require lapic_dont_panic=1.
+  //
+  Status = PatcherApplyGenericPatch (Patcher, &mLapicKernelPanicMasterPatch);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_INFO, "OCAK: [FAIL] Failed to apply extended modern lapic patch - %r\n", Status));
+  } else {
+    DEBUG ((DEBUG_INFO, "OCAK: [OK] Patch success extended modern lapic\n"));
+  }
+
+  return Status;
+}
+
+STATIC
+CONST UINT8
+  mLapicKernelPanicPatchLegacyFind[] = {
+  0x65, 0x8B, 0x04, 0x25, 0x14, 0x00, 0x00, 0x00,  ///< mov eax, gs:1Ch on 10.9.5, 14h on 10.7.5/10.8.5, and 3Ch on 10.6.8.
+  0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,        ///< lea rcx, _master_cpu
+  0x00, 0x00                                       ///< cmp eax, [rcx]
+};
+
+STATIC
+CONST UINT8
+  mLapicKernelPanicPatchLegacyMask[] = {
+  0xFF, 0xFF, 0xFF, 0xFF, 0xD7, 0xFF, 0xFF, 0xFF,
+  0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00
+};
+
+STATIC
+CONST UINT8
+  mLapicKernelPanicPatchLegacyReplace[] = {
+  0x31, 0xC0,                                                                              ///< xor eax, eax
+  0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 ///< nop
+};
+
+STATIC
+PATCHER_GENERIC_PATCH
+  mLapicKernelPanicLegacyPatch = {
+  .Comment     = DEBUG_POINTER ("LapicKernelPanicLegacy"),
+  .Base        = "_lapic_interrupt",
+  .Find        = mLapicKernelPanicPatchLegacyFind,
+  .Mask        = mLapicKernelPanicPatchLegacyMask,
+  .Replace     = mLapicKernelPanicPatchLegacyReplace,
+  .ReplaceMask = NULL,
+  .Size        = sizeof (mLapicKernelPanicPatchLegacyReplace),
+  .Count       = 1,
+  .Skip        = 0,
+  .Limit       = 1024
+};
+
+STATIC
+CONST UINT8
+  mLapicKernelPanicMasterPatchLegacyFind1[] = {
+  0x48, 0x8D, 0x00, 0x00, 0x00, 0x00, 0x00, ///< lea whatever, qword [_debug_boot_arg] <- address masked out
+  0x83, 0x00, 0x00,                         ///< cmp dword[whatever], 0 <- register masked out
+  0x74, 0x00, 0x83, 0x00                    ///< context instructions
+};
+
+STATIC
+CONST UINT8
+  mLapicKernelPanicMasterPatchLegacyMask1[] = {
+  0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0xFF, 0x00, 0x00,
+  0xFF, 0x00, 0xFF, 0x00
+};
+
+STATIC
+CONST UINT8
+  mLapicKernelPanicMasterPatchLegacyReplace1[] = {
+  0x31, 0xC0,                                     ///< xor eax, eax
+  0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, ///< nop
+  0x00, 0x00, 0x00, 0x00
+};
+
+STATIC
+CONST UINT8
+  mLapicKernelPanicMasterPatchLegacyReplaceMask1[] = {
+  0xFF, 0xFF,
+  0xFF, 0xFF,0xFF,  0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+  0x00, 0x00,0x00,  0x00
+};
+
+STATIC
+PATCHER_GENERIC_PATCH
+  mLapicKernelPanicMasterLegacyPatch1 = {
+  .Comment     = DEBUG_POINTER ("LapicKernelPanicMasterLegacy v1"),
+  .Base        = "_lapic_interrupt",
+  .Find        = mLapicKernelPanicMasterPatchLegacyFind1,
+  .Mask        = mLapicKernelPanicMasterPatchLegacyMask1,
+  .Replace     = mLapicKernelPanicMasterPatchLegacyReplace1,
+  .ReplaceMask = mLapicKernelPanicMasterPatchLegacyReplaceMask1,
+  .Size        = sizeof (mLapicKernelPanicMasterPatchLegacyFind1),
+  .Count       = 1,
+  .Skip        = 0,
+  .Limit       = 4096
+};
+
+STATIC
+CONST UINT8
+  mLapicKernelPanicMasterPatchLegacyFind2[] = {
+  0x48, 0x8D, 0x05, 0x00, 0x00, 0x00, 0x00, ///< lea rax, qword [_debug_boot_arg] <- address masked out
+  0x44, 0x8B, 0x00,                         ///< mov r8d, dword[rax]
+  0x45, 0x85, 0xC0,                         ///< test r8d, r8d
+  0x74, 0x00, 0x8B                          ///< context instructions
+};
+
+STATIC
+CONST UINT8
+  mLapicKernelPanicMasterPatchLegacyMask2[] = {
+  0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00,
+  0xFF, 0xFF, 0xFF,
+  0xFF, 0xFF, 0xFF,
+  0xFF, 0x00, 0xFF
+};
+
+STATIC
+CONST UINT8
+  mLapicKernelPanicMasterPatchLegacyReplace2[] = {
+  0x31, 0xC0,                                                       ///< xor eax, eax
+  0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, ///< nop
+  0x00, 0x00, 0x00
+};
+
+STATIC
+CONST UINT8
+  mLapicKernelPanicMasterPatchLegacyReplaceMask2[] = {
+  0xFF, 0xFF,
+  0xFF, 0xFF,0xFF,  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+  0x00, 0x00,0x00
+};
+
+STATIC
+PATCHER_GENERIC_PATCH
+  mLapicKernelPanicMasterLegacyPatch2 = {
+  .Comment     = DEBUG_POINTER ("LapicKernelPanicMasterLegacy v2"),
+  .Base        = "_lapic_interrupt",
+  .Find        = mLapicKernelPanicMasterPatchLegacyFind2,
+  .Mask        = mLapicKernelPanicMasterPatchLegacyMask2,
+  .Replace     = mLapicKernelPanicMasterPatchLegacyReplace2,
+  .ReplaceMask = mLapicKernelPanicMasterPatchLegacyReplaceMask2,
+  .Size        = sizeof (mLapicKernelPanicMasterPatchLegacyFind2),
+  .Count       = 1,
+  .Skip        = 0,
+  .Limit       = 4096
+};
+
+STATIC
+EFI_STATUS
+PatchLapicKernelLegacy (
+  IN OUT PATCHER_CONTEXT  *Patcher,
+  IN     UINT32           KernelVersion
+  )
+{
+  EFI_STATUS  Status;
+
+  Status = PatcherApplyGenericPatch (Patcher, &mLapicKernelPanicLegacyPatch);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_INFO, "OCAK: [FAIL] Failed to apply legacy lapic patch - %r\n", Status));
+    return Status;
+  }
+
+  DEBUG ((DEBUG_INFO, "OCAK: [OK] Patch success legacy lapic\n"));
+
+  //
+  // Patch away the master core check to never require lapic_dont_panic=1.
+  //
+  Status = PatcherApplyGenericPatch (Patcher, &mLapicKernelPanicMasterLegacyPatch1);
+  if (!EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_INFO, "OCAK: [OK] Patch success extended legacy lapic v1\n"));
+    return Status;
+  }
+
+  DEBUG ((DEBUG_INFO, "OCAK: [FAIL] Failed to apply extended legacy lapic patch v1 - %r, trying legacy v2\n", Status));
+  Status = PatcherApplyGenericPatch (Patcher, &mLapicKernelPanicMasterLegacyPatch2);
+  if (!EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_INFO, "OCAK: [OK] Patch success extended legacy lapic v2\n"));
+  } else {
+    DEBUG ((DEBUG_INFO, "OCAK: [FAIL] Failed to apply extended legacy lapic patch v2 - %r\n", Status));
+  }
+
+  return Status;
+}
+
+STATIC
+EFI_STATUS
 PatchLapicKernelPanic (
   IN OUT PATCHER_CONTEXT  *Patcher,
   IN     UINT32           KernelVersion
@@ -1556,37 +2064,12 @@ PatchLapicKernelPanic (
   //
   ASSERT (Patcher != NULL);
 
-  //
-  // This one is for <= 10.15 release kernels.
-  // TODO: Fix debug kernels and check whether we want more patches.
-  //
-  Status = PatcherApplyGenericPatch (Patcher, &mLapicKernelPanicPatch);
-  if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_INFO, "OCAK: [FAIL] Failed to apply modern lapic patch - %r\n", Status));
-
-    Status = PatcherApplyGenericPatch (Patcher, &mLapicKernelPanicLegacyPatch);
-    if (!EFI_ERROR (Status)) {
-      DEBUG ((DEBUG_INFO, "OCAK: [OK] Patch success legacy lapic\n"));
-    } else {
-      DEBUG ((DEBUG_INFO, "OCAK: [FAIL] Failed to apply modern lapic patch - %r\n", Status));
-    }
-  } else {
-    DEBUG ((DEBUG_INFO, "OCAK: [OK] Patch success lapic\n"));
-
-    //
-    // Also patch away the master core check to never require lapic_dont_panic=1.
-    // This one is optional, and seems to never be required in real world.
-    //
-    Status = PatcherApplyGenericPatch (Patcher, &mLapicKernelPanicMasterPatch);
-    if (EFI_ERROR (Status)) {
-      DEBUG ((DEBUG_INFO, "OCAK: [FAIL] Failed to apply extended lapic patch - %r\n", Status));
-    } else {
-      DEBUG ((DEBUG_INFO, "OCAK: [OK] Patch success extended lapic\n"));
-    }
-
-    Status = EFI_SUCCESS;
+  Status = PatchLapicKernel (Patcher, KernelVersion);
+  if (!EFI_ERROR (Status)) {
+    return Status;
   }
 
+  Status = PatchLapicKernelLegacy (Patcher, KernelVersion);
   return Status;
 }
 
@@ -2155,33 +2638,37 @@ PatchLegacyCommpage (
 STATIC
 CONST UINT8
   mAquantiaEthernetPatchFindShikumo[] = {
-  0x83, 0x7D, 0x00, 0x00,             ///< cmp dword [rbp+whatever], whatever
-  0x0F, 0x84, 0x00, 0x00, 0x00, 0x00, ///< je unsupported
-  0x83, 0x7D                          ///< LBL:
+  0x31, 0xC0,                        ///< xor eax, eax
+  0xE8, 0x00, 0x00, 0x00, 0x00,      ///< call _IOLog
+  0x83, 0x7D, 0x00, 0x00,            ///< cmp dword [rbp+whatever], whatever
+  0x0F, 0x84, 0x00, 0x00, 0x00, 0x00 ///< je unsupported
 };
 
 STATIC
 CONST UINT8
   mAquantiaEthernetPatchFindMaskShikumo[] = {
-  0xFF, 0xFF, 0x00, 0x00,
-  0xFF, 0xFF, 0x00, 0x00,0x00,  0x00,
-  0xFF, 0xFF
+  0xFF, 0xFF,
+  0xFF, 0x00,0x00,  0x00, 0x00,
+  0xFF, 0xFF,0x00,  0x00,
+  0xFF, 0xFF,0x00,  0x00, 0x00, 0x00
 };
 
 STATIC
 CONST UINT8
   mAquantiaEthernetPatchReplaceShikumo[] = {
-  0x83, 0x7D, 0x00, 0x00,             ///< cmp dword [rbp+whatever], whatever
-  0xEB, 0x04, 0x90, 0x90, 0x90, 0x90, ///< jmp LBL
-  0x83, 0x7D                          ///< LBL:
+  0x00, 0x00,
+  0x00, 0x00,0x00,  0x00, 0x00,
+  0x00, 0x00,0x00,  0x00,
+  0x90, 0x90,0x90,  0x90, 0x90, 0x90, ///< nop (je unsupported)
 };
 
 STATIC
 CONST UINT8
   mAquantiaEthernetPatchReplaceMaskShikumo[] = {
-  0xFF, 0xFF, 0x00, 0x00,
-  0xFF, 0xFF, 0xFF, 0xFF,0xFF,  0xFF,
-  0xFF, 0xFF
+  0x00, 0x00,
+  0x00, 0x00,0x00,  0x00, 0x00,
+  0x00, 0x00,0x00,  0x00,
+  0xFF, 0xFF,0xFF,  0xFF, 0xFF, 0xFF
 };
 
 STATIC
@@ -2223,7 +2710,7 @@ STATIC
 PATCHER_GENERIC_PATCH
   mAquantiaEthernetPatchMieze = {
   .Comment     = DEBUG_POINTER ("ForceAquantiaEthernetMieze"),
-  .Base        = "__ZN30AppleEthernetAquantiaAqtion10718checkConfigSupportERiS0_",
+  .Base        = NULL,
   .Find        = mAquantiaEthernetPatchFindMieze,
   .Mask        = mAquantiaEthernetPatchMaskMieze,
   .Replace     = mAquantiaEthernetPatchReplaceMieze,
@@ -2470,6 +2957,7 @@ KERNEL_QUIRK  gKernelQuirks[] = {
   [KernelQuirkCustomSmbiosGuid1]       = { "com.apple.driver.AppleSMBIOS",                  PatchCustomSmbiosGuid       },
   [KernelQuirkCustomSmbiosGuid2]       = { "com.apple.driver.AppleACPIPlatform",            PatchCustomSmbiosGuid       },
   [KernelQuirkDisableIoMapper]         = { "com.apple.iokit.IOPCIFamily",                   PatchAppleIoMapperSupport   },
+  [KernelQuirkDisableIoMapperMapping]  = { "com.apple.iokit.IOPCIFamily",                   PatchAppleIoMapperMapping   },
   [KernelQuirkDisableRtcChecksum]      = { "com.apple.driver.AppleRTC",                     PatchAppleRtcChecksum       },
   [KernelQuirkDummyPowerManagement]    = { "com.apple.driver.AppleIntelCPUPowerManagement", PatchDummyPowerManagement   },
   [KernelQuirkExtendBTFeatureFlags]    = { "com.apple.iokit.IOBluetoothFamily",             PatchBTFeatureFlags         },
