@@ -192,6 +192,7 @@ ExpandShortFormBootPath (
 /**
   Check boot entry visibility by device path.
 
+  @param[in]  Context      Picker context.
   @param[in]  DevicePath   Device path of the entry.
 
   @return Entry visibility
@@ -199,106 +200,99 @@ ExpandShortFormBootPath (
 STATIC
 INTERNAL_ENTRY_VISIBILITY
 ReadEntryVisibility (
-  IN EFI_DEVICE_PATH_PROTOCOL  *DevicePath,
-  IN BOOLEAN                   IsFolder
+  IN OC_PICKER_CONTEXT         *Context,
+  IN EFI_DEVICE_PATH_PROTOCOL  *DevicePath
   )
 {
-  EFI_STATUS                       Status;
-  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *FileSystem;
-  EFI_HANDLE                       Device;
-  UINTN                            BooterPathSize;
-  UINTN                            BooterPathLength;
-  UINTN                            VisibilityPathSize;
-  CHAR16                           *VisibilityPath;
-  CHAR16                           *VisibilityTerminator;
-  BOOLEAN                          Result;
-  CHAR8                            *Visibility;
+  EFI_STATUS  Status;
+  CHAR8       *Visibility;
+  CHAR8       *VisibilityCommand;
+  CHAR8       *Walker;
+  UINTN       IdentifierLength;
 
-  Status = gBS->LocateDevicePath (
-                  &gEfiSimpleFileSystemProtocolGuid,
-                  &DevicePath,
-                  &Device
-                  );
+  //
+  // Allow root location as well as leaf, because this is a non-Apple file which will
+  // get deleted at update if placed next to boot.efi in macOS.
+  // Leaf (next to bootloader) is recommended location for non-macOS.
+  //
+  Status = OcGetBootEntryFileFromDevicePath (
+             DevicePath,
+             L".contentVisibility",
+             "visibility",
+             OC_MAX_CONTENT_VISIBILITY_SIZE,
+             0,
+             (VOID **)&Visibility,
+             NULL,
+             TRUE,
+             TRUE
+             );
+
   if (EFI_ERROR (Status)) {
     return BootEntryNormal;
   }
 
-  Status = gBS->HandleProtocol (
-                  Device,
-                  &gEfiSimpleFileSystemProtocolGuid,
-                  (VOID **)&FileSystem
-                  );
-  if (EFI_ERROR (Status)) {
-    return BootEntryNormal;
+  //
+  // Allow for terminating new line, but be strict about it -
+  // after removing this, things must match exactly.
+  //
+  Walker = AsciiStrStr (Visibility, "\r");
+  if (Walker != NULL) {
+    *Walker = '\0';
   }
 
-  BooterPathSize = OcFileDevicePathFullNameSize (DevicePath);
-  Result         = OcOverflowAddUN (
-                     BooterPathSize,
-                     L_STR_SIZE (L"\\.contentVisibility"),
-                     &VisibilityPathSize
-                     );
-  if (Result) {
-    return BootEntryNormal;
+  Walker = AsciiStrStr (Visibility, "\n");
+  if (Walker != NULL) {
+    *Walker = '\0';
   }
 
-  VisibilityPath = AllocatePool (VisibilityPathSize);
-  if (VisibilityPath == NULL) {
-    return BootEntryNormal;
-  }
-
-  if (BooterPathSize > 0) {
-    OcFileDevicePathFullName (
-      VisibilityPath,
-      (FILEPATH_DEVICE_PATH *)DevicePath,
-      BooterPathSize
-      );
+  Walker = AsciiStrStr (Visibility, ":");
+  if (Walker == NULL) {
+    VisibilityCommand = Visibility;
   } else {
-    VisibilityPath[0] = '\0';
-  }
+    if (*(Context->InstanceIdentifier) == '\0') {
+      DEBUG ((DEBUG_INFO, "OCB: No InstanceIdentifier, ignoring qualified visibility\n"));
+      FreePool (Visibility);
+      return BootEntryNormal;
+    }
 
-  BooterPathLength = BooterPathSize / sizeof (CHAR16);
+    *Walker++         = '\0';
+    VisibilityCommand = Walker;
+    Walker            = Visibility;
 
-  if (BooterPathSize == 0) {
-    VisibilityTerminator = VisibilityPath;
-  } else if (IsFolder && (VisibilityPath[BooterPathLength - 1] == L'\\')) {
-    VisibilityTerminator = VisibilityPath + BooterPathLength;
-  } else if (IsFolder) {
-    VisibilityPath[BooterPathLength] = L'\\';
-    VisibilityTerminator             = VisibilityPath + BooterPathLength + 1;
-  } else {
-    VisibilityTerminator = OcStrrChr (VisibilityPath, L'\\');
-    if (VisibilityTerminator != NULL) {
-      ++VisibilityTerminator;
-    } else {
-      VisibilityTerminator = VisibilityPath;
+    IdentifierLength = AsciiStrLen (Context->InstanceIdentifier);
+    Status           = EFI_NOT_FOUND;
+    do {
+      if (  (AsciiStrnCmp (Walker, Context->InstanceIdentifier, IdentifierLength) == 0)
+         && ((Walker[IdentifierLength] == '\0') || (Walker[IdentifierLength] == ',')))
+      {
+        Status = EFI_SUCCESS;
+        break;
+      }
+
+      Walker = AsciiStrStr (Walker, ",");
+      if (Walker != NULL) {
+        ++Walker;
+      }
+    } while (Walker != NULL);
+
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_INFO, "OCB: \"%a\" not present in \"%a\" ignoring visibility\n", Context->InstanceIdentifier, Visibility));
+      FreePool (Visibility);
+      return BootEntryNormal;
     }
   }
 
-  CopyMem (VisibilityTerminator, L".contentVisibility", sizeof (L".contentVisibility"));
-
-  //
-  // Note, this guarantees nul-termination.
-  //
-  Visibility = OcReadFile (FileSystem, VisibilityPath, NULL, 64);
-
-  FreePool (VisibilityPath);
-
-  if (Visibility == NULL) {
-    return BootEntryNormal;
-  }
-
-  if (AsciiStrnCmp (Visibility, "Disabled", L_STR_LEN ("Disabled")) == 0) {
+  if (AsciiStrCmp (VisibilityCommand, "Disabled") == 0) {
     FreePool (Visibility);
     return BootEntryDisabled;
   }
 
-  if (AsciiStrnCmp (Visibility, "Auxiliary", L_STR_LEN ("Auxiliary")) == 0) {
+  if (AsciiStrCmp (VisibilityCommand, "Auxiliary") == 0) {
     FreePool (Visibility);
     return BootEntryAuxiliary;
   }
 
-  DEBUG ((DEBUG_INFO, "OCB: Discovered unsupported .contentVisibility\n"));
+  DEBUG ((DEBUG_INFO, "OCB: Discovered unsupported visibility \"%a\"\n", VisibilityCommand));
 
   FreePool (Visibility);
   return BootEntryNormal;
@@ -487,7 +481,7 @@ AddBootEntryOnFileSystem (
   //
   // Skip disabled entries, like OpenCore bootloader.
   //
-  Visibility = ReadEntryVisibility (DevicePath, IsFolder);
+  Visibility = ReadEntryVisibility (BootContext->PickerContext, DevicePath);
   if (Visibility == BootEntryDisabled) {
     DEBUG ((DEBUG_INFO, "OCB: Discarding disabled entry by visibility\n"));
     if (IsReallocated) {
@@ -658,7 +652,6 @@ InternalAddBootEntryFromCustomEntry (
   FILEPATH_DEVICE_PATH             *FilePath;
   CHAR8                            *ContentFlavour;
   CHAR16                           *BootDirectoryName;
-  EFI_HANDLE                       Device;
   EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *SimpleFileSystem;
   CONST EFI_PARTITION_ENTRY        *PartitionEntry;
 
@@ -683,6 +676,8 @@ InternalAddBootEntryFromCustomEntry (
   }
 
   BootEntry->IsExternal = FileSystem->External;
+  BootEntry->CustomRead = CustomEntry->CustomRead;
+  BootEntry->CustomFree = CustomEntry->CustomFree;
 
   if (CustomEntry->Id != NULL) {
     BootEntry->Id = AsciiStrCopyToUnicode (CustomEntry->Id, 0);
@@ -699,7 +694,7 @@ InternalAddBootEntryFromCustomEntry (
     return EFI_OUT_OF_RESOURCES;
   }
 
-  if (!CustomEntry->SystemAction) {
+  if (!CustomEntry->UnmanagedBootAction && !CustomEntry->SystemAction && !CustomEntry->UnmanagedDevicePath) {
     ASSERT (CustomEntry->Path != NULL);
     PathName = AsciiStrCopyToUnicode (CustomEntry->Path, 0);
     if (PathName == NULL) {
@@ -722,18 +717,34 @@ InternalAddBootEntryFromCustomEntry (
     DEBUG_INFO,
     "OCB: Adding custom entry %s (%a|B:%d) -> %a\n",
     BootEntry->Name,
-    CustomEntry->SystemAction != NULL ? "action" : (CustomEntry->Tool ? "tool" : "os"),
+    CustomEntry->UnmanagedBootAction != NULL ? "unmanaged" : (CustomEntry->SystemAction != NULL ? "action" : (CustomEntry->Tool ? "tool" : "os")),
     IsBootEntryProtocol,
     CustomEntry->Path
     ));
 
-  if (CustomEntry->SystemAction) {
+  if (CustomEntry->UnmanagedBootAction) {
+    BootEntry->Type                            = OC_BOOT_UNMANAGED;
+    BootEntry->UnmanagedBootAction             = CustomEntry->UnmanagedBootAction;
+    BootEntry->UnmanagedBootGetFinalDevicePath = CustomEntry->UnmanagedBootGetFinalDevicePath;
+    BootEntry->AudioBasePath                   = CustomEntry->AudioBasePath;
+    BootEntry->AudioBaseType                   = CustomEntry->AudioBaseType;
+    BootEntry->IsExternal                      = CustomEntry->External;
+    BootEntry->DevicePath                      = DuplicateDevicePath (CustomEntry->UnmanagedDevicePath);
+
+    if (BootEntry->DevicePath == NULL) {
+      FreeBootEntry (BootEntry);
+      return EFI_OUT_OF_RESOURCES;
+    }
+  } else if (CustomEntry->SystemAction) {
     BootEntry->Type          = OC_BOOT_SYSTEM;
     BootEntry->SystemAction  = CustomEntry->SystemAction;
     BootEntry->AudioBasePath = CustomEntry->AudioBasePath;
     BootEntry->AudioBaseType = CustomEntry->AudioBaseType;
   } else if (CustomEntry->Tool) {
-    BootEntry->Type = OC_BOOT_EXTERNAL_TOOL;
+    ASSERT (CustomEntry->CustomRead == NULL && CustomEntry->CustomFree == NULL);
+    BootEntry->Type       = OC_BOOT_EXTERNAL_TOOL;
+    BootEntry->CustomRead = BootContext->PickerContext->CustomRead;
+    BootEntry->CustomFree = NULL;
     UnicodeUefiSlashes (PathName);
     BootEntry->PathName = PathName;
   } else {
@@ -744,13 +755,19 @@ InternalAddBootEntryFromCustomEntry (
     // for user entry path is absolute device path.
     //
     if (IsBootEntryProtocol) {
-      UnicodeUefiSlashes (PathName);
-      BootEntry->DevicePath = FileDevicePath (FileSystem->Handle, PathName);
+      if (CustomEntry->UnmanagedDevicePath) {
+        BootEntry->DevicePath = DuplicateDevicePath (CustomEntry->UnmanagedDevicePath);
+      } else {
+        UnicodeUefiSlashes (PathName);
+        BootEntry->DevicePath = FileDevicePath (FileSystem->Handle, PathName);
+        FreePool (PathName);
+      }
     } else {
+      ASSERT (CustomEntry->UnmanagedDevicePath == NULL);
       BootEntry->DevicePath = ConvertTextToDevicePath (PathName);
+      FreePool (PathName);
     }
 
-    FreePool (PathName);
     if (BootEntry->DevicePath == NULL) {
       FreeBootEntry (BootEntry);
       return EFI_OUT_OF_RESOURCES;
@@ -764,22 +781,24 @@ InternalAddBootEntryFromCustomEntry (
                                           )
                                         );
     if (FilePath == NULL) {
-      DEBUG ((
-        DEBUG_WARN,
-        "OCB: Invalid device path, not adding entry %a\n",
-        CustomEntry->Name
-        ));
-      FreeBootEntry (BootEntry);
-      return EFI_UNSUPPORTED;
-    }
-
-    BootEntry->PathName = AllocateCopyPool (
-                            OcFileDevicePathNameSize (FilePath),
-                            FilePath->PathName
-                            );
-    if (BootEntry->PathName == NULL) {
-      FreeBootEntry (BootEntry);
-      return EFI_OUT_OF_RESOURCES;
+      if (BootEntry->CustomRead == NULL) {
+        DEBUG ((
+          DEBUG_WARN,
+          "OCB: Invalid device path, not adding entry %a\n",
+          CustomEntry->Name
+          ));
+        FreeBootEntry (BootEntry);
+        return EFI_UNSUPPORTED;
+      }
+    } else {
+      BootEntry->PathName = AllocateCopyPool (
+                              OcFileDevicePathNameSize (FilePath),
+                              FilePath->PathName
+                              );
+      if (BootEntry->PathName == NULL) {
+        FreeBootEntry (BootEntry);
+        return EFI_OUT_OF_RESOURCES;
+      }
     }
 
     //
@@ -802,39 +821,31 @@ InternalAddBootEntryFromCustomEntry (
       Status = OcBootPolicyDevicePathToDirPath (
                  BootEntry->DevicePath,
                  &BootDirectoryName,
-                 &Device
+                 &SimpleFileSystem
                  );
 
       if (!EFI_ERROR (Status)) {
-        Status = gBS->HandleProtocol (
-                        Device,
-                        &gEfiSimpleFileSystemProtocolGuid,
-                        (VOID **)&SimpleFileSystem
-                        );
+        ContentFlavour = InternalGetContentFlavour (SimpleFileSystem, BootDirectoryName);
 
-        if (!EFI_ERROR (Status)) {
-          ContentFlavour = InternalGetContentFlavour (SimpleFileSystem, BootDirectoryName, L".contentFlavour");
-
-          if (ContentFlavour != NULL) {
-            //
-            // 'Auto' read from file means do not override.
-            //
-            if (AsciiStrCmp (ContentFlavour, OC_FLAVOUR_AUTO) == 0) {
-              FreePool (ContentFlavour);
-            } else {
-              if (BootEntry->Flavour != NULL) {
-                FreePool (BootEntry->Flavour);
-              }
-
-              BootEntry->Flavour = ContentFlavour;
+        if (ContentFlavour != NULL) {
+          //
+          // 'Auto' read from file means do not override.
+          //
+          if (AsciiStrCmp (ContentFlavour, OC_FLAVOUR_AUTO) == 0) {
+            FreePool (ContentFlavour);
+          } else {
+            if (BootEntry->Flavour != NULL) {
+              FreePool (BootEntry->Flavour);
             }
-          }
 
-          //
-          // There is no need for the additional flavour fixup from BootEntryInfo.c, since type
-          // OC_BOOT_EXTERNAL_OS does not need fixing up, and already determines our voiceover.
-          //
+            BootEntry->Flavour = ContentFlavour;
+          }
         }
+
+        //
+        // There is no need for the additional flavour fixup from BootEntryInfo.c, since type
+        // OC_BOOT_EXTERNAL_OS does not need fixing up, and already determines our voiceover.
+        //
 
         FreePool (BootDirectoryName);
       }
@@ -845,7 +856,7 @@ InternalAddBootEntryFromCustomEntry (
   BootEntry->ExposeDevicePath = CustomEntry->RealPath;
   BootEntry->FullNvramAccess  = CustomEntry->FullNvramAccess;
 
-  if (BootEntry->SystemAction != NULL) {
+  if ((BootEntry->UnmanagedBootAction != NULL) || (BootEntry->SystemAction != NULL) || (CustomEntry->CustomRead != NULL)) {
     ASSERT (CustomEntry->Arguments == NULL);
   } else {
     ASSERT (CustomEntry->Arguments != NULL);
@@ -863,7 +874,7 @@ InternalAddBootEntryFromCustomEntry (
 
   BootEntry->IsCustom            = TRUE;
   BootEntry->IsBootEntryProtocol = IsBootEntryProtocol;
-  if (IsBootEntryProtocol && (BootEntry->SystemAction == NULL)) {
+  if (IsBootEntryProtocol && (BootEntry->UnmanagedBootAction == NULL) && (BootEntry->SystemAction == NULL)) {
     PartitionEntry = OcGetGptPartitionEntry (FileSystem->Handle);
     if (PartitionEntry == NULL) {
       CopyGuid (&BootEntry->UniquePartitionGUID, &gEfiPartTypeUnusedGuid);
@@ -1228,8 +1239,10 @@ AddBootEntryFromBootOption (
   EFI_HANDLE                FileSystemHandle;
   OC_BOOT_FILESYSTEM        *FileSystem;
   UINTN                     DevicePathSize;
+  CHAR16                    *TextDevicePath;
   INTN                      NumPatchedNodes;
   BOOLEAN                   IsAppleLegacy;
+  BOOLEAN                   IsAppleLegacyHandled;
   BOOLEAN                   IsRoot;
   EFI_LOAD_OPTION           *LoadOption;
   UINTN                     LoadOptionSize;
@@ -1321,6 +1334,7 @@ AddBootEntryFromBootOption (
   //
   // Expand BootCamp device path to EFI partition device path.
   //
+  IsAppleLegacyHandled = FALSE;
   if (IsAppleLegacy) {
     //
     // BootCampHD always refers to a full Device Path. Failure to patch
@@ -1332,12 +1346,72 @@ AddBootEntryFromBootOption (
       return EFI_NOT_FOUND;
     }
 
+    //
+    // Attempt to handle detected legacy OS via Apple legacy interface.
+    //
     RemainingDevicePath = DevicePath;
-    DevicePath          = OcDiskFindSystemPartitionPath (
+    DevicePath          = OcDiskFindActiveMbrPartitionPath (
                             DevicePath,
                             &DevicePathSize,
                             &FileSystemHandle
                             );
+
+    //
+    // Disk with MBR or hybrid MBR was detected.
+    //
+    if (DevicePath != NULL) {
+      TextDevicePath = ConvertDevicePathToText (DevicePath, FALSE, FALSE);
+      if (TextDevicePath != NULL) {
+        //
+        // Add entry from externally provided legacy interface.
+        // Boot entry ID must be active partition Device Path.
+        //
+        Status = OcAddEntriesFromBootEntryProtocol (
+                   BootContext,
+                   CustomFileSystem,
+                   EntryProtocolHandles,
+                   EntryProtocolHandleCount,
+                   TextDevicePath,
+                   TRUE,
+                   FALSE
+                   );
+        if (!EFI_ERROR (Status)) {
+          if (EntryProtocolId != NULL) {
+            *EntryProtocolId = TextDevicePath;
+          }
+
+          FileSystem           = CustomFileSystem;
+          IsAppleLegacyHandled = TRUE;
+        } else {
+          FreePool (TextDevicePath);
+        }
+      }
+    }
+
+    if (!IsAppleLegacyHandled) {
+      //
+      // Boot option was set to Apple legacy interface incorrectly by macOS.
+      // This will occur on Macs that normally boot Windows in legacy mode,
+      // but have Windows installed in UEFI mode.
+      //
+      // Locate the ESP from the BootCampHD Device Path instead.
+      //
+      DevicePath = OcDiskFindSystemPartitionPath (
+                     RemainingDevicePath,
+                     &DevicePathSize,
+                     &FileSystemHandle
+                     );
+
+      //
+      // Ensure that we are allowed to boot from this filesystem.
+      //
+      if (DevicePath != NULL) {
+        FileSystem = InternalFileSystemForHandle (BootContext, FileSystemHandle, LazyScan, NULL);
+        if (FileSystem == NULL) {
+          DevicePath = NULL;
+        }
+      }
+    }
 
     FreePool (RemainingDevicePath);
 
@@ -1345,16 +1419,6 @@ AddBootEntryFromBootOption (
     // This is obviously always a Root Device Path.
     //
     IsRoot = TRUE;
-
-    //
-    // Ensure that we are allowed to boot from this filesystem.
-    //
-    if (DevicePath != NULL) {
-      FileSystem = InternalFileSystemForHandle (BootContext, FileSystemHandle, LazyScan, NULL);
-      if (FileSystem == NULL) {
-        DevicePath = NULL;
-      }
-    }
 
     //
     // The Device Path returned by OcDiskFindSystemPartitionPath() is a pointer
@@ -1408,10 +1472,12 @@ AddBootEntryFromBootOption (
       NumPatchedNodes = OcFixAppleBootDevicePathNode (
                           &DevicePath,
                           &RemainingDevicePath,
+                          NULL,
                           NULL
                           );
     } while (NumPatchedNodes > 0);
 
+    Status = EFI_NOT_FOUND;
     if ((ExpandedDevicePath == NULL) && (CustomFileSystem != NULL)) {
       //
       // If non-standard device path, attempt to pre-construct a user config
@@ -1432,12 +1498,12 @@ AddBootEntryFromBootOption (
               *CustomIndex = Index;
             }
 
-            InternalAddBootEntryFromCustomEntry (
-              BootContext,
-              CustomFileSystem,
-              &BootContext->PickerContext->CustomEntries[Index],
-              FALSE
-              );
+            Status = InternalAddBootEntryFromCustomEntry (
+                       BootContext,
+                       CustomFileSystem,
+                       &BootContext->PickerContext->CustomEntries[Index],
+                       FALSE
+                       );
             break;
           }
         }
@@ -1450,6 +1516,36 @@ AddBootEntryFromBootOption (
         ASSERT ((EntryProtocolPartuuid == NULL) == (EntryProtocolId == NULL));
 
         EntryProtocolDevPath = InternalGetOcEntryProtocolDevPath (DevicePath);
+
+        if (EntryProtocolDevPath != NULL) {
+          //
+          // Zero GUID can be non-file-based entry (e.g. from network boot),
+          // or file-based entry on OVMF mounted drives where GPT GUIDs are
+          // not available. Try non-file-based first.
+          //
+          if (CompareGuid (&gEfiPartTypeUnusedGuid, &EntryProtocolDevPath->Partuuid)) {
+            Status = OcAddEntriesFromBootEntryProtocol (
+                       BootContext,
+                       CustomFileSystem,
+                       EntryProtocolHandles,
+                       EntryProtocolHandleCount,
+                       EntryProtocolDevPath->EntryName.PathName,
+                       TRUE,
+                       FALSE
+                       );
+            if (!EFI_ERROR (Status)) {
+              if (EntryProtocolPartuuid != NULL) {
+                CopyGuid (EntryProtocolPartuuid, &gEfiPartTypeUnusedGuid);
+              }
+
+              if (EntryProtocolId != NULL) {
+                *EntryProtocolId = AllocateCopyPool (StrSize (EntryProtocolDevPath->EntryName.PathName), EntryProtocolDevPath->EntryName.PathName);
+              }
+
+              EntryProtocolDevPath = NULL;
+            }
+          }
+        }
 
         if (EntryProtocolDevPath != NULL) {
           //
@@ -1522,7 +1618,7 @@ AddBootEntryFromBootOption (
     DevicePath = ExpandedDevicePath;
 
     if (DevicePath == NULL) {
-      return EFI_NOT_FOUND;
+      return Status;
     }
   } else if (NumPatchedNodes == -1) {
     //
@@ -1579,6 +1675,10 @@ AddBootEntryFromBootOption (
 
   if (EFI_ERROR (Status)) {
     FreePool (DevicePath);
+  }
+
+  if (IsAppleLegacyHandled) {
+    return EFI_SUCCESS;
   }
 
   //
@@ -2141,11 +2241,6 @@ OcScanForBootEntries (
     AddBootEntryFromSelfRecovery (BootContext, FileSystem);
   }
 
-  if (DefaultEntryId != NULL) {
-    FreePool (DefaultEntryId);
-    DefaultEntryId = NULL;
-  }
-
   if (CustomFileSystem != NULL) {
     //
     // Insert the custom file system last for entry order.
@@ -2166,10 +2261,15 @@ OcScanForBootEntries (
       CustomFileSystem,
       EntryProtocolHandles,
       EntryProtocolHandleCount,
-      NULL,
+      DefaultEntryId,
       FALSE,
       FALSE
       );
+  }
+
+  if (DefaultEntryId != NULL) {
+    FreePool (DefaultEntryId);
+    DefaultEntryId = NULL;
   }
 
   OcFreeBootEntryProtocolHandles (&EntryProtocolHandles);
@@ -2455,6 +2555,12 @@ OcLoadBootEntry (
   EFI_STATUS                 Status;
   EFI_HANDLE                 EntryHandle;
   INTERNAL_DMG_LOAD_CONTEXT  DmgLoadContext;
+  VOID                       *CustomFreeContext;
+
+  if ((BootEntry->Type & OC_BOOT_UNMANAGED) != 0) {
+    ASSERT (BootEntry->UnmanagedBootAction != NULL);
+    return BootEntry->UnmanagedBootAction (Context, BootEntry->DevicePath);
+  }
 
   if ((BootEntry->Type & OC_BOOT_SYSTEM) != 0) {
     ASSERT (BootEntry->SystemAction != NULL);
@@ -2466,7 +2572,8 @@ OcLoadBootEntry (
              BootEntry,
              ParentHandle,
              &EntryHandle,
-             &DmgLoadContext
+             &DmgLoadContext,
+             &CustomFreeContext
              );
   if (!EFI_ERROR (Status)) {
     //
@@ -2485,9 +2592,25 @@ OcLoadBootEntry (
     if (EFI_ERROR (Status)) {
       DEBUG ((DEBUG_WARN, "OCB: StartImage failed - %r\n", Status));
       //
-      // Unload dmg if any.
+      // Unload image.
+      // Note: This is not needed on success, since this has already been done
+      // and image handle is now invalid, if image was an application and it
+      // exited successfully:
+      // https://github.com/tianocore/edk2/blob/a3aab12c34dba35d1fd592f4939cb70617668f7e/MdeModulePkg/Core/Dxe/Image/Image.c#L1789-L1793
       //
-      InternalUnloadDmg (&DmgLoadContext);
+      gBS->UnloadImage (EntryHandle);
+    }
+
+    //
+    // Unload dmg if any.
+    //
+    InternalUnloadDmg (&DmgLoadContext);
+    //
+    // Unload any entry protocol custom items.
+    // For instance HTTP Boot natively supported RAM disk, on loading .iso or .img.
+    //
+    if (BootEntry->CustomFree != NULL) {
+      BootEntry->CustomFree (CustomFreeContext);
     }
   } else {
     DEBUG ((DEBUG_WARN, "OCB: LoadImage failed - %r\n", Status));

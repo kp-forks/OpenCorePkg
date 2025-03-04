@@ -136,12 +136,14 @@ OC_DECLARE (OC_BOOTER_PATCH_ARRAY)
 #define OC_BOOTER_QUIRKS_FIELDS(_, __) \
   _(BOOLEAN                     , AllowRelocationBlock      ,     , FALSE  , ()) \
   _(BOOLEAN                     , AvoidRuntimeDefrag        ,     , FALSE  , ()) \
+  _(BOOLEAN                     , ClearTaskSwitchBit        ,     , FALSE  , ()) \
   _(BOOLEAN                     , DevirtualiseMmio          ,     , FALSE  , ()) \
   _(BOOLEAN                     , DisableSingleUser         ,     , FALSE  , ()) \
   _(BOOLEAN                     , DisableVariableWrite      ,     , FALSE  , ()) \
   _(BOOLEAN                     , DiscardHibernateMap       ,     , FALSE  , ()) \
   _(BOOLEAN                     , EnableSafeModeSlide       ,     , FALSE  , ()) \
   _(BOOLEAN                     , EnableWriteUnprotector    ,     , FALSE  , ()) \
+  _(BOOLEAN                     , FixupAppleEfiImages       ,     , FALSE  , ()) \
   _(BOOLEAN                     , ForceBooterSignature      ,     , FALSE  , ()) \
   _(BOOLEAN                     , ForceExitBootServices     ,     , FALSE  , ()) \
   _(BOOLEAN                     , ProtectMemoryRegions      ,     , FALSE  , ()) \
@@ -287,6 +289,7 @@ OC_DECLARE (OC_KERNEL_PATCH_ARRAY)
   _(BOOLEAN                     , CustomPciSerialDevice       ,     , FALSE  , ()) \
   _(BOOLEAN                     , CustomSmbiosGuid            ,     , FALSE  , ()) \
   _(BOOLEAN                     , DisableIoMapper             ,     , FALSE  , ()) \
+  _(BOOLEAN                     , DisableIoMapperMapping      ,     , FALSE  , ()) \
   _(BOOLEAN                     , DisableLinkeditJettison     ,     , FALSE  , ()) \
   _(BOOLEAN                     , DisableRtcChecksum          ,     , FALSE  , ()) \
   _(BOOLEAN                     , ExtendBTFeatureFlags        ,     , FALSE  , ()) \
@@ -334,6 +337,7 @@ OC_DECLARE (OC_MISC_BLESS_ARRAY)
 #define OC_MISC_BOOT_FIELDS(_, __) \
   _(OC_STRING                   , PickerMode                  ,     , OC_STRING_CONSTR ("Builtin", _, __) , OC_DESTR (OC_STRING)) \
   _(OC_STRING                   , HibernateMode               ,     , OC_STRING_CONSTR ("None", _, __)    , OC_DESTR (OC_STRING)) \
+  _(OC_STRING                   , InstanceIdentifier          ,     , OC_STRING_CONSTR ("", _, __)        , OC_DESTR (OC_STRING)) \
   _(OC_STRING                   , LauncherOption              ,     , OC_STRING_CONSTR ("Disabled", _, __), OC_DESTR (OC_STRING) ) \
   _(OC_STRING                   , LauncherPath                ,     , OC_STRING_CONSTR ("Default", _, __) , OC_DESTR (OC_STRING) ) \
   _(UINT32                      , ConsoleAttributes           ,     , 0                                   , ())                   \
@@ -604,6 +608,13 @@ OC_DECLARE (OC_PLATFORM_CONFIG)
 **/
 
 ///
+/// Array of driver names to unload.
+///
+#define OC_UEFI_UNLOAD_ARRAY_FIELDS(_, __) \
+  OC_ARRAY (OC_STRING, _, __)
+OC_DECLARE (OC_UEFI_UNLOAD_ARRAY)
+
+///
 /// Drivers is an ordered array of drivers to load.
 ///
 #define OC_UEFI_DRIVER_ENTRY_FIELDS(_, __) \
@@ -685,7 +696,9 @@ OC_DECLARE (OC_UEFI_INPUT)
 ///
 #define OC_UEFI_OUTPUT_FIELDS(_, __) \
   _(OC_STRING                   , ConsoleMode                 ,     , OC_STRING_CONSTR ("", _, __), OC_DESTR (OC_STRING)) \
+  _(OC_STRING                   , ConsoleFont                 ,     , OC_STRING_CONSTR ("", _, __), OC_DESTR (OC_STRING)) \
   _(OC_STRING                   , Resolution                  ,     , OC_STRING_CONSTR ("", _, __), OC_DESTR (OC_STRING)) \
+  _(OC_STRING                   , InitialMode                 ,     , OC_STRING_CONSTR ("", _, __), OC_DESTR (OC_STRING)) \
   _(OC_STRING                   , TextRenderer                ,     , OC_STRING_CONSTR ("", _, __), OC_DESTR (OC_STRING)) \
   _(OC_STRING                   , GopPassThrough              ,     , OC_STRING_CONSTR ("Disabled", _, __), OC_DESTR (OC_STRING)) \
   _(BOOLEAN                     , IgnoreTextInGraphics        ,     , FALSE  , ()) \
@@ -698,6 +711,7 @@ OC_DECLARE (OC_UEFI_INPUT)
   _(BOOLEAN                     , UgaPassThrough              ,     , FALSE  , ()) \
   _(BOOLEAN                     , DirectGopRendering          ,     , FALSE  , ()) \
   _(BOOLEAN                     , ForceResolution             ,     , FALSE  , ()) \
+  _(BOOLEAN                     , GopBurstMode                ,     , FALSE  , ()) \
   _(BOOLEAN                     , ReconnectGraphicsOnConnect  ,     , FALSE  , ())
 OC_DECLARE (OC_UEFI_OUTPUT)
 
@@ -722,6 +736,7 @@ OC_DECLARE (OC_UEFI_OUTPUT)
   _(BOOLEAN                     , FirmwareVolume              ,     , FALSE  , ()) \
   _(BOOLEAN                     , HashServices                ,     , FALSE  , ()) \
   _(BOOLEAN                     , OSInfo                      ,     , FALSE  , ()) \
+  _(BOOLEAN                     , PciIo                       ,     , FALSE  , ()) \
   _(BOOLEAN                     , UnicodeCollation            ,     , FALSE  , ())
 OC_DECLARE (OC_UEFI_PROTOCOL_OVERRIDES)
 
@@ -742,6 +757,7 @@ OC_DECLARE (OC_UEFI_PROTOCOL_OVERRIDES)
   _(BOOLEAN                     , ReleaseUsbOwnership         ,     , FALSE  , ()) \
   _(BOOLEAN                     , ReloadOptionRoms            ,     , FALSE  , ()) \
   _(BOOLEAN                     , RequestBootVarRouting       ,     , FALSE  , ()) \
+  _(BOOLEAN                     , ShimRetainProtocol          ,     , FALSE  , ()) \
   _(BOOLEAN                     , UnblockFsConnect            ,     , FALSE  , ()) \
   _(BOOLEAN                     , ForceOcWriteFlash           ,     , FALSE  , ())
 OC_DECLARE (OC_UEFI_QUIRKS)
@@ -774,7 +790,8 @@ OC_DECLARE (OC_UEFI_RSVD_ARRAY)
   _(OC_UEFI_OUTPUT              , Output            ,     , OC_CONSTR2 (OC_UEFI_OUTPUT, _, __)             , OC_DESTR (OC_UEFI_OUTPUT)) \
   _(OC_UEFI_PROTOCOL_OVERRIDES  , ProtocolOverrides ,     , OC_CONSTR2 (OC_UEFI_PROTOCOL_OVERRIDES, _, __) , OC_DESTR (OC_UEFI_PROTOCOL_OVERRIDES)) \
   _(OC_UEFI_QUIRKS              , Quirks            ,     , OC_CONSTR2 (OC_UEFI_QUIRKS, _, __)             , OC_DESTR (OC_UEFI_QUIRKS)) \
-  _(OC_UEFI_RSVD_ARRAY          , ReservedMemory    ,     , OC_CONSTR2 (OC_UEFI_RSVD_ARRAY, _, __)         , OC_DESTR (OC_UEFI_RSVD_ARRAY))
+  _(OC_UEFI_RSVD_ARRAY          , ReservedMemory    ,     , OC_CONSTR2 (OC_UEFI_RSVD_ARRAY, _, __)         , OC_DESTR (OC_UEFI_RSVD_ARRAY)) \
+  _(OC_UEFI_UNLOAD_ARRAY        , Unload            ,     , OC_CONSTR2 (OC_UEFI_UNLOAD_ARRAY, _, __)       , OC_DESTR (OC_UEFI_UNLOAD_ARRAY))
 OC_DECLARE (OC_UEFI_CONFIG)
 
 /**
